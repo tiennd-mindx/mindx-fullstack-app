@@ -1,0 +1,75 @@
+name: Deploy to Azure AKS
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+env:
+  ACR_NAME: ${{ secrets.ACR_NAME }}
+  RESOURCE_GROUP: ${{ secrets.RESOURCE_GROUP }}
+  AKS_CLUSTER: ${{ secrets.AKS_CLUSTER }}
+  
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+      
+    - name: Azure Login
+      uses: azure/login@v1
+      with:
+        creds: ${{ secrets.AZURE_CREDENTIALS }}
+        
+    - name: ACR Login
+      run: |
+        az acr login --name ${{ env.ACR_NAME }}
+        
+    - name: Build and Push Backend
+      working-directory: ./backend
+      run: |
+        az acr build \
+          --registry ${{ env.ACR_NAME }} \
+          --image backend-api:${{ github.sha }} \
+          --image backend-api:latest \
+          .
+          
+    - name: Build and Push Frontend
+      working-directory: ./frontend
+      run: |
+        az acr build \
+          --registry ${{ env.ACR_NAME }} \
+          --image frontend-app:${{ github.sha }} \
+          --image frontend-app:latest \
+          .
+          
+    - name: Get AKS Credentials
+      run: |
+        az aks get-credentials \
+          --resource-group ${{ env.RESOURCE_GROUP }} \
+          --name ${{ env.AKS_CLUSTER }} \
+          --overwrite-existing
+          
+    - name: Update K8s Manifests
+      run: |
+        sed -i "s/<ACR_NAME>/${{ env.ACR_NAME }}/g" k8s/backend-deployment.yaml
+        sed -i "s/<ACR_NAME>/${{ env.ACR_NAME }}/g" k8s/frontend-deployment.yaml
+        
+    - name: Deploy to AKS
+      run: |
+        kubectl apply -f k8s/secrets.yaml
+        kubectl apply -f k8s/backend-deployment.yaml
+        kubectl apply -f k8s/frontend-deployment.yaml
+        kubectl apply -f k8s/ingress.yaml
+        
+    - name: Verify Deployment
+      run: |
+        kubectl rollout status deployment/backend-api
+        kubectl rollout status deployment/frontend-app
+        kubectl get pods
+        kubectl get services
+        kubectl get ingress
